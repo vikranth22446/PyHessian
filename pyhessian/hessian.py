@@ -89,7 +89,7 @@ class hessian():
             self.model.zero_grad()
             tmp_num_data = inputs.size(0)
             outputs = self.model(inputs.to(device))
-            loss = self.criterion(outputs, targets.to(device), group)
+            loss = self.criterion(outputs, targets.to(device), group.to(device))
             loss.backward(create_graph=True)
             params, gradsH = get_params_grad(self.model)
             self.model.zero_grad()
