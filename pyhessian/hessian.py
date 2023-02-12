@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PyHessian.  If not, see <http://www.gnu.org/licenses/>.
 #*
-
+from tqdm import tqdm
 import torch
 import math
 from torch.autograd import Variable
@@ -34,7 +34,7 @@ class hessian():
         iii) the estimated eigenvalue density
     """
 
-    def __init__(self, model, criterion, data=None, dataloader=None, cuda=True):
+    def __init__(self, model, criterion, compute_outputs, data=None, dataloader=None, cuda=True, group=None, model_type="default", wilds_metadata_grouper=None):
         """
         model: the model that needs Hessain information
         criterion: the loss function
@@ -45,9 +45,10 @@ class hessian():
         # make sure we either pass a single batch or a dataloader
         assert (data != None and dataloader == None) or (data == None and
                                                          dataloader != None)
-
+        self.model_type = model_type
         self.model = model.eval()  # make model is in evaluation model
         self.criterion = criterion
+        self.compute_outputs = compute_outputs
 
         if data != None:
             self.data = data
@@ -63,14 +64,14 @@ class hessian():
 
         # pre-processing for single batch case to simplify the computation.
         if not self.full_dataset:
-            self.inputs, self.targets = self.data
+            self.inputs, self.targets, self.group = self.data
             if self.device == 'cuda':
-                self.inputs, self.targets = self.inputs.cuda(
-                ), self.targets.cuda()
+                self.inputs, self.target, self.group = self.inputs.cuda(
+                ), self.targets.cuda(), self.group.cuda()
 
             # if we only compute the Hessian information for a single batch data, we can re-use the gradients.
             outputs = self.model(self.inputs)
-            loss = self.criterion(outputs, self.targets)
+            loss = self.criterion(outputs, self.targets, self.group)
             loss.backward(create_graph=True)
 
         # this step is used to extract the parameters from the model
@@ -85,10 +86,14 @@ class hessian():
 
         THv = [torch.zeros(p.size()).to(device) for p in self.params
               ]  # accumulate result
-        for inputs, targets, group in self.data:
+        
+        for batch in self.data:
             self.model.zero_grad()
+            inputs = batch[0]
+            targets = batch[1]
+            group = batch[2]
             tmp_num_data = inputs.size(0)
-            outputs = self.model(inputs.to(device))
+            outputs = self.compute_outputs(self.model, inputs, outputs)
             loss = self.criterion(outputs, targets.to(device), group.to(device))
             loss.backward(create_graph=True)
             params, gradsH = get_params_grad(self.model)
@@ -103,6 +108,7 @@ class hessian():
                 for THv1, Hv1 in zip(THv, Hv)
             ]
             num_data += float(tmp_num_data)
+            torch.cuda.empty_cache()
 
         THv = [THv1 / float(num_data) for THv1 in THv]
         eigenvalue = group_product(THv, v).cpu().item()
@@ -168,7 +174,7 @@ class hessian():
         trace_vhv = []
         trace = 0.
 
-        for i in range(maxIter):
+        for i in tqdm(range(maxIter), disable=True):
             self.model.zero_grad()
             v = [
                 torch.randint_like(p, high=2, device=device)
